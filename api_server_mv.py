@@ -147,9 +147,10 @@ class ModelWorker:
     def __init__(self,
                  model_path='tencent/Hunyuan3D-2mini',
                  tex_model_path='tencent/Hunyuan3D-2',
-                 subfolder='hunyuan3d-dit-v2-0',
+                 subfolder='hunyuan3d-dit-v2-mv-turbo',
                  device='cuda',
-                 enable_tex=False):
+                 enable_tex=False,
+                 enable_flashvdm=False):
         self.model_path = model_path
         self.worker_id = worker_id
         self.device = device
@@ -162,11 +163,14 @@ class ModelWorker:
             use_safetensors=True,
             device=device,
         )
-        self.pipeline.enable_flashvdm(mc_algo='mc')
-        self.pipeline_t2i = HunyuanDiTPipeline(
-            'Tencent-Hunyuan/HunyuanDiT-v1.1-Diffusers-Distilled',
-            device=device
-        )
+        if enable_flashvdm:
+            self.pipeline.enable_flashvdm(mc_algo='mc')
+        self.pipeline_t2i = None
+        if args.enable_t23d:
+            self.pipeline_t2i = HunyuanDiTPipeline(
+                'Tencent-Hunyuan/HunyuanDiT-v1.1-Diffusers-Distilled',
+                device=device
+            )
         if enable_tex:
             self.pipeline_tex = Hunyuan3DPaintPipeline.from_pretrained(tex_model_path)
 
@@ -185,17 +189,37 @@ class ModelWorker:
 
     @torch.inference_mode()
     def generate(self, uid, params):
-        if 'image' in params:
+        if any(k in params for k in ('mv_image_front', 'mv_image_back', 'mv_image_left', 'mv_image_right')):
+            image = {}
+            if 'mv_image_front' in params:
+                image['front'] = load_image_from_base64(params['mv_image_front'])
+            if 'mv_image_back' in params:
+                image['back'] = load_image_from_base64(params['mv_image_back'])
+            if 'mv_image_left' in params:
+                image['left'] = load_image_from_base64(params['mv_image_left'])
+            if 'mv_image_right' in params:
+                image['right'] = load_image_from_base64(params['mv_image_right'])
+        elif 'image' in params:
             image = params["image"]
             image = load_image_from_base64(image)
+            if not isinstance(image, dict):
+                image = {'front': image}
         else:
             if 'text' in params:
                 text = params["text"]
+                if self.pipeline_t2i is None:
+                    raise ValueError("Text-to-3D is disabled. Start the server with --enable_t23d")
                 image = self.pipeline_t2i(text)
+                if not isinstance(image, dict):
+                    image = {'front': image}
             else:
                 raise ValueError("No input image or text provided")
 
-        image = self.rembg(image)
+        if params.get("auto_remove_background", True):
+            if isinstance(image, dict):
+                image = {k: self.rembg(v) for k, v in image.items()}
+            else:
+                image = self.rembg(image)
         params['image'] = image
 
         if 'mesh' in params:
@@ -284,6 +308,23 @@ async def generate(request: Request):
     return JSONResponse(ret, status_code=200)
 
 
+@app.get("/server_info")
+async def server_info():
+    return JSONResponse(
+        {
+            "status": "ok",
+            "model_path": args.model_path,
+            "subfolder": args.subfolder,
+            "enable_flashvdm": args.enable_flashvdm,
+            "enable_tex": args.enable_tex,
+            "enable_t23d": args.enable_t23d,
+            "device": args.device,
+            "port": args.port,
+        },
+        status_code=200,
+    )
+
+
 @app.get("/status/{uid}")
 async def status(uid: str):
     save_file_path = os.path.join(SAVE_DIR, f'{uid}.glb')
@@ -303,14 +344,23 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=8081)
     parser.add_argument("--model_path", type=str, default='tencent/Hunyuan3D-2mini')
     parser.add_argument("--tex_model_path", type=str, default='tencent/Hunyuan3D-2')
+    parser.add_argument("--subfolder", type=str, default='hunyuan3d-dit-v2-mv-turbo')
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--limit-model-concurrency", type=int, default=5)
     parser.add_argument('--enable_tex', action='store_true')
+    parser.add_argument('--enable_t23d', action='store_true')
+    parser.add_argument('--enable_flashvdm', action='store_true')
     args = parser.parse_args()
     logger.info(f"args: {args}")
 
     model_semaphore = asyncio.Semaphore(args.limit_model_concurrency)
 
-    worker = ModelWorker(model_path=args.model_path, device=args.device, enable_tex=args.enable_tex,
-                         tex_model_path=args.tex_model_path)
+    worker = ModelWorker(
+        model_path=args.model_path,
+        tex_model_path=args.tex_model_path,
+        subfolder=args.subfolder,
+        device=args.device,
+        enable_tex=args.enable_tex,
+        enable_flashvdm=args.enable_flashvdm,
+    )
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")

@@ -389,20 +389,20 @@ def build_app():
 
     """
 
-    with gr.Blocks(theme=gr.themes.Base(), title='Hunyuan-3D-2.0', analytics_enabled=False, css=custom_css) as demo:
+    with gr.Blocks(title='Hunyuan-3D-2.0', analytics_enabled=False) as demo:
         gr.HTML(title_html)
 
         with gr.Row():
             with gr.Column(scale=3):
-                with gr.Tabs(selected='tab_img_prompt') as tabs_prompt:
-                    with gr.Tab('Image Prompt', id='tab_img_prompt', visible=not MV_MODE) as tab_ip:
+                with gr.Tabs(selected='tab_mv' if MV_MODE else 'tab_img_prompt') as tabs_prompt:
+                    with gr.Tab('Image', id='tab_img_prompt', visible=True) as tab_ip:
                         image = gr.Image(label='Image', type='pil', image_mode='RGBA', height=290)
 
-                    with gr.Tab('Text Prompt', id='tab_txt_prompt', visible=HAS_T2I and not MV_MODE) as tab_tp:
+                    with gr.Tab('Text', id='tab_txt_prompt', visible=HAS_T2I) as tab_tp:
                         caption = gr.Textbox(label='Text Prompt',
                                              placeholder='HunyuanDiT will be used to generate image.',
                                              info='Example: A 3D model of a cute cat, white background')
-                    with gr.Tab('MultiView Prompt', visible=MV_MODE) as tab_mv:
+                    with gr.Tab('MultiView', id='tab_mv', visible=True) as tab_mv:
                         # gr.Label('Please upload at least one front image.')
                         with gr.Row():
                             mv_image_front = gr.Image(label='Front', type='pil', image_mode='RGBA', height=140,
@@ -481,7 +481,7 @@ def build_app():
                         stats = gr.Json({}, label='Mesh Stats')
 
             with gr.Column(scale=3 if MV_MODE else 2):
-                with gr.Tabs(selected='tab_img_gallery') as gallery:
+                with gr.Tabs(selected='tab_mv_gallery' if MV_MODE else 'tab_img_gallery') as gallery:
                     with gr.Tab('Image to 3D Gallery', id='tab_img_gallery', visible=not MV_MODE) as tab_gi:
                         with gr.Row():
                             gr.Examples(examples=example_is, inputs=[image],
