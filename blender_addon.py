@@ -175,11 +175,13 @@ class Hunyuan3DProperties(bpy.types.PropertyGroup):
         name="Status Message",
         default=""
     )
+    # Single-image input
     image_path: StringProperty(
         name="Image",
         description="Select an image to upload",
         subtype='FILE_PATH'
     )
+    # Multi-view inputs
     use_multiview: BoolProperty(
         name="Use MultiView",
         description="Use Front/Back/Left/Right image inputs",
@@ -205,6 +207,7 @@ class Hunyuan3DProperties(bpy.types.PropertyGroup):
         description="Right view image",
         subtype='FILE_PATH'
     )
+    # Generation settings
     auto_remove_background: BoolProperty(
         name="Auto Remove Background",
         description="Automatically isolate the subject from the background before generation",
@@ -253,12 +256,123 @@ class Hunyuan3DProperties(bpy.types.PropertyGroup):
     gpu_memory: StringProperty(name="GPU Memory", default="Unavailable")
     gpu_utilization: StringProperty(name="GPU Utilization", default="Unavailable")
     gpu_status_message: StringProperty(name="GPU Status", default="Not checked")
+    server_status: StringProperty(name="Server Status", default="Not checked")
+    server_model_path: StringProperty(name="Server Model", default="Unknown")
+    server_subfolder: StringProperty(name="Server Subfolder", default="Unknown")
+    server_enable_flashvdm: StringProperty(name="Server FlashVDM", default="Unknown")
+    server_enable_tex: StringProperty(name="Server Texture", default="Unknown")
+    server_enable_t23d: StringProperty(name="Server Text2Img", default="Unknown")
+
+
+class Hunyuan3DSavePresetOperator(bpy.types.Operator):
+    bl_idname = "hunyuan3d.save_preset"
+    bl_label = "Save Settings"
+    bl_description = "Save the current Hunyuan3D settings"
+
+    def execute(self, context):
+        props = context.scene.gen_3d_props
+        name = props.preset_name.strip()
+        if not name:
+            self.report({'WARNING'}, "Enter a preset name first.")
+            return {'CANCELLED'}
+
+        data = _load_presets()
+        data[name] = {
+            "use_multiview": props.use_multiview,
+            "auto_remove_background": props.auto_remove_background,
+            "octree_resolution": props.octree_resolution,
+            "num_inference_steps": props.num_inference_steps,
+            "guidance_scale": props.guidance_scale,
+            "texture": props.texture,
+            "api_url": props.api_url,
+        }
+        _save_presets(data)
+        props.selected_preset = name
+        self.report({'INFO'}, f"Saved settings: {name}")
+        return {'FINISHED'}
+
+
+class Hunyuan3DLoadPresetOperator(bpy.types.Operator):
+    bl_idname = "hunyuan3d.load_preset"
+    bl_label = "Load Settings"
+    bl_description = "Load the selected Hunyuan3D settings"
+
+    def execute(self, context):
+        props = context.scene.gen_3d_props
+        name = props.selected_preset
+        data = _load_presets()
+        if not name or name not in data:
+            self.report({'WARNING'}, "Select a saved setting set first.")
+            return {'CANCELLED'}
+
+        preset = data[name]
+        props.use_multiview = preset.get("use_multiview", props.use_multiview)
+        props.auto_remove_background = preset.get("auto_remove_background", props.auto_remove_background)
+        props.octree_resolution = preset.get("octree_resolution", props.octree_resolution)
+        props.num_inference_steps = preset.get("num_inference_steps", props.num_inference_steps)
+        props.guidance_scale = preset.get("guidance_scale", props.guidance_scale)
+        props.texture = preset.get("texture", props.texture)
+        props.api_url = preset.get("api_url", props.api_url)
+        self.report({'INFO'}, f"Loaded settings: {name}")
+        return {'FINISHED'}
+
+
+class Hunyuan3DDeletePresetOperator(bpy.types.Operator):
+    bl_idname = "hunyuan3d.delete_preset"
+    bl_label = "Delete Settings"
+    bl_description = "Delete the selected Hunyuan3D settings"
+
+    def execute(self, context):
+        props = context.scene.gen_3d_props
+        name = props.selected_preset
+        data = _load_presets()
+        if not name or name not in data:
+            self.report({'WARNING'}, "Select a saved setting set first.")
+            return {'CANCELLED'}
+
+        del data[name]
+        _save_presets(data)
+        props.selected_preset = ""
+        self.report({'INFO'}, f"Deleted settings: {name}")
+        return {'FINISHED'}
+
+
+class Hunyuan3DRefreshGPUOperator(bpy.types.Operator):
+    bl_idname = "hunyuan3d.refresh_gpu"
+    bl_label = "Refresh GPU"
+    bl_description = "Refresh GPU usage information"
+
+    def execute(self, context):
+        stats = _poll_gpu_stats(force=True)
+        props = context.scene.gen_3d_props
+        props.gpu_name = stats["name"]
+        props.gpu_memory = stats["memory"]
+        props.gpu_utilization = stats["utilization"]
+        props.gpu_status_message = stats["status"]
+        return {'FINISHED'}
+
+
+class Hunyuan3DRefreshServerOperator(bpy.types.Operator):
+    bl_idname = "hunyuan3d.refresh_server"
+    bl_label = "Refresh Server"
+    bl_description = "Refresh active server information"
+
+    def execute(self, context):
+        props = context.scene.gen_3d_props
+        stats = _poll_server_info(props.api_url, force=True)
+        props.server_status = stats["status"]
+        props.server_model_path = stats["model_path"]
+        props.server_subfolder = stats["subfolder"]
+        props.server_enable_flashvdm = stats["enable_flashvdm"]
+        props.server_enable_tex = stats["enable_tex"]
+        props.server_enable_t23d = stats["enable_t23d"]
+        return {'FINISHED'}
 
 
 class Hunyuan3DOperator(bpy.types.Operator):
     bl_idname = "object.generate_3d"
     bl_label = "Generate 3D Model"
-    bl_description = "Generate a 3D model from text, image, multiview images or selected mesh"
+    bl_description = "Generate a 3D model from text description, an image or a selected mesh"
 
     job_id = ''
     prompt = ""
@@ -269,10 +383,10 @@ class Hunyuan3DOperator(bpy.types.Operator):
     mv_image_back = ""
     mv_image_left = ""
     mv_image_right = ""
-    auto_remove_background = False
     octree_resolution = 256
     num_inference_steps = 20
     guidance_scale = 5.5
+    auto_remove_background = False
     texture = False
     selected_mesh_base64 = ""
     selected_mesh = None
@@ -318,6 +432,7 @@ class Hunyuan3DOperator(bpy.types.Operator):
             return {'CANCELLED'}
 
         if self.task_finished:
+            print("Threaded task completed")
             self.task_finished = False
             props = context.scene.gen_3d_props
             props.is_processing = False
@@ -325,6 +440,7 @@ class Hunyuan3DOperator(bpy.types.Operator):
         return {'PASS_THROUGH'}
 
     def invoke(self, context, event):
+        # 启动线程
         props = context.scene.gen_3d_props
         self.prompt = props.prompt
         self.api_url = props.api_url
@@ -334,10 +450,10 @@ class Hunyuan3DOperator(bpy.types.Operator):
         self.mv_image_back = props.mv_image_back
         self.mv_image_left = props.mv_image_left
         self.mv_image_right = props.mv_image_right
-        self.auto_remove_background = props.auto_remove_background
         self.octree_resolution = props.octree_resolution
         self.num_inference_steps = props.num_inference_steps
         self.guidance_scale = props.guidance_scale
+        self.auto_remove_background = props.auto_remove_background
         self.texture = props.texture
 
         has_mv = any([self.mv_image_front, self.mv_image_back, self.mv_image_left, self.mv_image_right])
@@ -347,177 +463,161 @@ class Hunyuan3DOperator(bpy.types.Operator):
                 return {'FINISHED'}
         else:
             if self.prompt == "" and self.image_path == "":
-                self.report({'WARNING'}, "Please enter text or select an image first.")
+                self.report({'WARNING'}, "Please enter some text or select an image first.")
                 return {'FINISHED'}
 
+        # 保存选中的 mesh 对象引用
         for obj in context.selected_objects:
             if obj.type == 'MESH':
                 self.selected_mesh = obj
                 break
 
+        if self.selected_mesh:
+            temp_glb_file = tempfile.NamedTemporaryFile(delete=False, suffix=".glb")
+            temp_glb_file.close()
+            bpy.ops.export_scene.gltf(filepath=temp_glb_file.name, use_selection=True)
+            with open(temp_glb_file.name, "rb") as file:
+                mesh_data = file.read()
+            mesh_b64_str = base64.b64encode(mesh_data).decode()
+            os.unlink(temp_glb_file.name)
+            self.selected_mesh_base64 = mesh_b64_str
+
         props.is_processing = True
-        self.thread = threading.Thread(target=self.generate_model)
+
+        self.image_path = self._resolve_path(self.image_path)
+        self.mv_image_front = self._resolve_path(self.mv_image_front)
+        self.mv_image_back = self._resolve_path(self.mv_image_back)
+        self.mv_image_left = self._resolve_path(self.mv_image_left)
+        self.mv_image_right = self._resolve_path(self.mv_image_right)
+
+        if self.selected_mesh and self.texture:
+            props.status_message = "Texturing Selected Mesh...\n" \
+                                   "This may take several minutes depending \n on your GPU power."
+        else:
+            mesh_type = 'Textured Mesh' if self.texture else 'White Mesh'
+            if self.use_multiview:
+                prompt_type = 'MultiView Images'
+            else:
+                prompt_type = 'Text Prompt' if self.prompt else 'Image'
+            props.status_message = f"Generating {mesh_type} with {prompt_type}...\n" \
+                                   "This may take several minutes depending \n on your GPU power."
+
+        self.thread = threading.Thread(target=self.generate_model, args=[context])
         self.thread.start()
 
-        context.window_manager.modal_handler_add(self)
+        wm = context.window_manager
+        wm.modal_handler_add(self)
         return {'RUNNING_MODAL'}
 
-    def generate_model(self):
+    def generate_model(self, context):
+        self.report({'INFO'}, f"Generation Start")
+        base_url = self.api_url.rstrip('/')
+
         try:
-            payload = {
+            base_payload = {
                 "octree_resolution": self.octree_resolution,
                 "num_inference_steps": self.num_inference_steps,
                 "guidance_scale": self.guidance_scale,
-                "texture": self.texture,
                 "auto_remove_background": self.auto_remove_background,
+                "texture": self.texture
             }
 
             if self.use_multiview:
-                payload.update(self._build_mv_payload())
-            elif self.image_path:
-                payload["image"] = self._encode_image_file(self.image_path)
-            elif self.prompt:
-                payload["text"] = self.prompt
+                mv_payload = self._build_mv_payload()
+                if not mv_payload:
+                    raise Exception("No multiview images found.")
+            else:
+                mv_payload = {}
 
-            response = requests.post(f"{self.api_url}/generate", json=payload, timeout=600)
-            response.raise_for_status()
-            result = response.json()
-            self.job_id = result["uid"]
-            bpy.app.timers.register(self.check_status)
-        except Exception as e:
-            print(f"Generation failed: {e}")
-            self.task_finished = True
+            if self.selected_mesh_base64 and self.texture:
+                payload = dict(base_payload)
+                payload["mesh"] = self.selected_mesh_base64
+                if self.use_multiview and mv_payload:
+                    self.report({'INFO'}, "Post Texturing with MultiView Images")
+                    payload.update(mv_payload)
+                elif self.image_path:
+                    self.report({'INFO'}, "Post Texturing with Image")
+                    payload["image"] = self._encode_image_file(self.image_path)
+                else:
+                    self.report({'INFO'}, "Post Texturing with Text")
+                    payload["text"] = self.prompt
+                response = requests.post(f"{base_url}/generate", json=payload)
+            else:
+                payload = dict(base_payload)
+                if self.use_multiview and mv_payload:
+                    self.report({'INFO'}, "Post Start MultiView to 3D")
+                    payload.update(mv_payload)
+                elif self.image_path:
+                    self.report({'INFO'}, "Post Start Image to 3D")
+                    payload["image"] = self._encode_image_file(self.image_path)
+                else:
+                    self.report({'INFO'}, "Post Start Text to 3D")
+                    payload["text"] = self.prompt
+                response = requests.post(f"{base_url}/generate", json=payload)
+            self.report({'INFO'}, f"Post Done")
+            props = context.scene.gen_3d_props
 
-    def check_status(self):
-        try:
-            response = requests.get(f"{self.api_url}/status/{self.job_id}", timeout=10)
-            response.raise_for_status()
-            status = response.json()
+            if response.status_code != 200:
+                self.report({'ERROR'}, f"Generation failed: {response.text}")
+                return
 
-            if status["status"] == "completed":
-                file_response = requests.get(f"{self.api_url}/file/{self.job_id}", timeout=120)
-                file_response.raise_for_status()
-                with tempfile.NamedTemporaryFile(suffix=".glb", delete=False) as tmp_file:
-                    tmp_file.write(file_response.content)
-                    tmp_path = tmp_file.name
-                bpy.ops.import_scene.gltf(filepath=tmp_path)
-                self.task_finished = True
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".glb")
+            temp_file.write(response.content)
+            temp_file.close()
+
+            # Import the GLB file in the main thread
+            def import_handler():
+                bpy.ops.import_scene.gltf(filepath=temp_file.name)
+                os.unlink(temp_file.name)
+
+                # 获取新导入的 mesh
+                new_obj = bpy.context.selected_objects[0] if bpy.context.selected_objects else None
+                if new_obj and self.selected_mesh and self.texture:
+                    # 应用选中 mesh 的位置、旋转和缩放
+                    new_obj.location = self.selected_mesh.location
+                    new_obj.rotation_euler = self.selected_mesh.rotation_euler
+                    new_obj.scale = self.selected_mesh.scale
+
+                    # 隐藏原来的 mesh
+                    self.selected_mesh.hide_set(True)
+                    self.selected_mesh.hide_render = True
+
                 return None
 
-            if status["status"] == "failed":
-                print("Generation failed on server")
-                self.task_finished = True
-                return None
+            bpy.app.timers.register(import_handler)
 
-            return 2.0
         except Exception as e:
-            print(f"Status check failed: {e}")
+            self.report({'ERROR'}, f"Error: {str(e)}")
+
+        finally:
             self.task_finished = True
-            return None
+            props = context.scene.gen_3d_props
+            props.is_processing = False
+            self.selected_mesh_base64 = ""
 
 
-class Hunyuan3DSavePresetOperator(bpy.types.Operator):
-    bl_idname = "hunyuan3d.save_preset"
-    bl_label = "Save Current Settings"
-
-    def execute(self, context):
-        props = context.scene.gen_3d_props
-        name = props.preset_name.strip()
-        if not name:
-            self.report({'WARNING'}, "Preset name is required.")
-            return {'CANCELLED'}
-
-        data = _load_presets()
-        data[name] = {
-            "api_url": props.api_url,
-            "use_multiview": props.use_multiview,
-            "auto_remove_background": props.auto_remove_background,
-            "octree_resolution": props.octree_resolution,
-            "num_inference_steps": props.num_inference_steps,
-            "guidance_scale": props.guidance_scale,
-            "texture": props.texture,
-        }
-        _save_presets(data)
-        self.report({'INFO'}, f"Saved preset: {name}")
-        return {'FINISHED'}
-
-
-class Hunyuan3DLoadPresetOperator(bpy.types.Operator):
-    bl_idname = "hunyuan3d.load_preset"
-    bl_label = "Load Selected Settings"
-
-    def execute(self, context):
-        props = context.scene.gen_3d_props
-        name = props.selected_preset
-        data = _load_presets()
-        if not name or name not in data:
-            self.report({'WARNING'}, "Select a saved preset first.")
-            return {'CANCELLED'}
-
-        preset = data[name]
-        props.api_url = preset.get("api_url", props.api_url)
-        props.use_multiview = preset.get("use_multiview", props.use_multiview)
-        props.auto_remove_background = preset.get("auto_remove_background", props.auto_remove_background)
-        props.octree_resolution = preset.get("octree_resolution", props.octree_resolution)
-        props.num_inference_steps = preset.get("num_inference_steps", props.num_inference_steps)
-        props.guidance_scale = preset.get("guidance_scale", props.guidance_scale)
-        props.texture = preset.get("texture", props.texture)
-        self.report({'INFO'}, f"Loaded preset: {name}")
-        return {'FINISHED'}
-
-
-class Hunyuan3DDeletePresetOperator(bpy.types.Operator):
-    bl_idname = "hunyuan3d.delete_preset"
-    bl_label = "Delete Selected Settings"
-
-    def execute(self, context):
-        props = context.scene.gen_3d_props
-        name = props.selected_preset
-        data = _load_presets()
-        if not name or name not in data:
-            self.report({'WARNING'}, "Select a saved preset first.")
-            return {'CANCELLED'}
-
-        del data[name]
-        _save_presets(data)
-        props.selected_preset = ""
-        self.report({'INFO'}, f"Deleted preset: {name}")
-        return {'FINISHED'}
-
-
-class Hunyuan3DPanel(bpy.types.Panel):
-    bl_label = "Nymphs3D"
-    bl_idname = "VIEW3D_PT_hunyuan3d_panel"
+class HUNYUAN3D_PT_panel(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'Nymphs3D'
+    bl_label = 'Nymphs3D'
 
     def draw(self, context):
         layout = self.layout
         props = context.scene.gen_3d_props
 
-        box = layout.box()
-        row = box.row()
-        row.prop(props, "show_saved_setups", icon='TRIA_DOWN' if props.show_saved_setups else 'TRIA_RIGHT', emboss=False)
-        row.label(text="Saved Setups")
-        if props.show_saved_setups:
-            box.prop(props, "preset_name")
-            box.operator("hunyuan3d.save_preset", icon='ADD')
-            box.prop(props, "selected_preset")
-            row = box.row(align=True)
-            row.operator("hunyuan3d.load_preset", icon='IMPORT')
-            row.operator("hunyuan3d.delete_preset", icon='TRASH')
-
         layout.prop(props, "api_url")
         layout.prop(props, "use_multiview")
+        layout.prop(props, "prompt")
 
         if props.use_multiview:
-            layout.prop(props, "mv_image_front")
-            layout.prop(props, "mv_image_back")
-            layout.prop(props, "mv_image_left")
-            layout.prop(props, "mv_image_right")
+            box = layout.box()
+            box.label(text="MultiView Images")
+            box.prop(props, "mv_image_front")
+            box.prop(props, "mv_image_back")
+            box.prop(props, "mv_image_left")
+            box.prop(props, "mv_image_right")
         else:
-            layout.prop(props, "prompt")
             layout.prop(props, "image_path")
 
         layout.prop(props, "auto_remove_background")
@@ -526,41 +626,76 @@ class Hunyuan3DPanel(bpy.types.Panel):
         layout.prop(props, "guidance_scale")
         layout.prop(props, "texture")
 
+        box = layout.box()
+        box.prop(
+            props,
+            "show_saved_setups",
+            text="Presets",
+            icon='TRIA_DOWN' if props.show_saved_setups else 'TRIA_RIGHT',
+            emboss=False,
+        )
+        if props.show_saved_setups:
+            box.prop(props, "preset_name", text="Save As")
+            row = box.row(align=True)
+            row.operator("hunyuan3d.save_preset", text="Save Current Setup")
+            box.prop(props, "selected_preset", text="Load Setup")
+            row = box.row(align=True)
+            row.operator("hunyuan3d.load_preset", text="Load Setup")
+            row.operator("hunyuan3d.delete_preset", text="Delete Setup")
+
+        box = layout.box()
+        box.prop(
+            props,
+            "show_server_info",
+            text="Server Info",
+            icon='TRIA_DOWN' if props.show_server_info else 'TRIA_RIGHT',
+            emboss=False,
+        )
+        if props.show_server_info:
+            box.label(text=f"Status: {props.server_status}")
+            box.label(text=f"Model: {props.server_model_path}")
+            box.label(text=f"Subfolder: {props.server_subfolder}")
+            box.label(text=f"FlashVDM: {props.server_enable_flashvdm}")
+            box.label(text=f"Texture: {props.server_enable_tex}")
+            box.label(text=f"Text2Img: {props.server_enable_t23d}")
+            box.operator("hunyuan3d.refresh_server", text="Refresh Server")
+
+        box = layout.box()
+        box.prop(
+            props,
+            "show_gpu_status",
+            text="GPU Status",
+            icon='TRIA_DOWN' if props.show_gpu_status else 'TRIA_RIGHT',
+            emboss=False,
+        )
+        if props.show_gpu_status:
+            box.label(text=f"GPU: {props.gpu_name}")
+            box.label(text=f"VRAM: {props.gpu_memory}")
+            box.label(text=f"Load: {props.gpu_utilization}")
+            box.label(text=f"Status: {props.gpu_status_message}")
+            box.operator("hunyuan3d.refresh_gpu", text="Refresh GPU")
+
         row = layout.row()
         row.enabled = not props.is_processing
-        row.operator("object.generate_3d", icon='MESH_MONKEY')
+        row.operator("object.generate_3d")
 
-        server_box = layout.box()
-        row = server_box.row()
-        row.prop(props, "show_server_info", icon='TRIA_DOWN' if props.show_server_info else 'TRIA_RIGHT', emboss=False)
-        row.label(text="Server Info")
-        if props.show_server_info:
-            info = _poll_server_info(props.api_url)
-            server_box.label(text=f"Status: {info['status']}")
-            server_box.label(text=f"Model: {info['model_path']}")
-            server_box.label(text=f"Subfolder: {info['subfolder']}")
-            server_box.label(text=f"FlashVDM: {info['enable_flashvdm']}")
-            server_box.label(text=f"Texture: {info['enable_tex']}")
-            server_box.label(text=f"Text-to-3D: {info['enable_t23d']}")
-
-        gpu_box = layout.box()
-        row = gpu_box.row()
-        row.prop(props, "show_gpu_status", icon='TRIA_DOWN' if props.show_gpu_status else 'TRIA_RIGHT', emboss=False)
-        row.label(text="GPU Status")
-        if props.show_gpu_status:
-            gpu_box.label(text=f"GPU: {props.gpu_name}")
-            gpu_box.label(text=f"Memory: {props.gpu_memory}")
-            gpu_box.label(text=f"Utilization: {props.gpu_utilization}")
-            gpu_box.label(text=f"State: {props.gpu_status_message}")
+        if props.is_processing:
+            if props.status_message:
+                for line in props.status_message.split("\n"):
+                    layout.label(text=line)
+            else:
+                layout.label("Processing...")
 
 
 classes = (
     Hunyuan3DProperties,
-    Hunyuan3DOperator,
     Hunyuan3DSavePresetOperator,
     Hunyuan3DLoadPresetOperator,
     Hunyuan3DDeletePresetOperator,
-    Hunyuan3DPanel,
+    Hunyuan3DRefreshGPUOperator,
+    Hunyuan3DRefreshServerOperator,
+    Hunyuan3DOperator,
+    HUNYUAN3D_PT_panel,
 )
 
 
@@ -568,14 +703,16 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.Scene.gen_3d_props = bpy.props.PointerProperty(type=Hunyuan3DProperties)
-    bpy.app.timers.register(_gpu_status_timer, persistent=True)
+    if not bpy.app.timers.is_registered(_gpu_status_timer):
+        bpy.app.timers.register(_gpu_status_timer, persistent=True)
 
 
 def unregister():
-    if hasattr(bpy.types.Scene, "gen_3d_props"):
-        del bpy.types.Scene.gen_3d_props
+    if bpy.app.timers.is_registered(_gpu_status_timer):
+        bpy.app.timers.unregister(_gpu_status_timer)
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
+    del bpy.types.Scene.gen_3d_props
 
 
 if __name__ == "__main__":
