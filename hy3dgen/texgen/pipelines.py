@@ -16,6 +16,7 @@
 import logging
 import numpy as np
 import os
+import time
 import torch
 from PIL import Image
 from typing import List, Union, Optional
@@ -187,8 +188,28 @@ class Hunyuan3DPaintPipeline:
         return new_image
 
     @torch.no_grad()
-    def __call__(self, mesh, image):
+    def __call__(self, mesh, image, progress_callback=None):
+        total_steps = 10
 
+        def notify(step_index, label, *, started=False, elapsed=None):
+            if started:
+                detail = label
+            elif elapsed is not None:
+                detail = f"{label} ({elapsed:.1f}s)"
+            else:
+                detail = label
+            logger.info("Texture step %s/%s: %s", step_index, total_steps, detail)
+            if progress_callback is None:
+                return
+            progress_callback(
+                step_index=step_index,
+                total_steps=total_steps,
+                label=label,
+                started=started,
+                elapsed=elapsed,
+            )
+
+        notify(1, "Preparing texture prompts", started=True)
         if not isinstance(image, List):
             image = [image]
 
@@ -199,42 +220,70 @@ class Hunyuan3DPaintPipeline:
             else:
                 image_prompt = image[i]
             images_prompt.append(image_prompt)
-            
+        notify(1, "Preparing texture prompts", elapsed=0.0)
+
+        step_started = time.time()
+        notify(2, "Recentering prompt images", started=True)
         images_prompt = [self.recenter_image(image_prompt) for image_prompt in images_prompt]
+        notify(2, "Recentering prompt images", elapsed=time.time() - step_started)
 
+        step_started = time.time()
+        notify(3, "Removing light and shadow", started=True)
         images_prompt = [self.models['delight_model'](image_prompt) for image_prompt in images_prompt]
+        notify(3, "Removing light and shadow", elapsed=time.time() - step_started)
 
+        step_started = time.time()
+        notify(4, "Generating UVs and loading mesh", started=True)
         mesh = mesh_uv_wrap(mesh)
-
         self.render.load_mesh(mesh)
+        notify(4, "Generating UVs and loading mesh", elapsed=time.time() - step_started)
 
         selected_camera_elevs, selected_camera_azims, selected_view_weights = \
             self.config.candidate_camera_elevs, self.config.candidate_camera_azims, self.config.candidate_view_weights
 
+        step_started = time.time()
+        notify(5, "Rendering normal guidance views", started=True)
         normal_maps = self.render_normal_multiview(
             selected_camera_elevs, selected_camera_azims, use_abs_coor=True)
+        notify(5, "Rendering normal guidance views", elapsed=time.time() - step_started)
+
+        step_started = time.time()
+        notify(6, "Rendering position guidance views", started=True)
         position_maps = self.render_position_multiview(
             selected_camera_elevs, selected_camera_azims)
+        notify(6, "Rendering position guidance views", elapsed=time.time() - step_started)
 
         camera_info = [(((azim // 30) + 9) % 12) // {-20: 1, 0: 1, 20: 1, -90: 3, 90: 3}[
             elev] + {-20: 0, 0: 12, 20: 24, -90: 36, 90: 40}[elev] for azim, elev in
                        zip(selected_camera_azims, selected_camera_elevs)]
+        step_started = time.time()
+        notify(7, "Running multiview texture diffusion", started=True)
         multiviews = self.models['multiview_model'](images_prompt, normal_maps + position_maps, camera_info)
+        notify(7, "Running multiview texture diffusion", elapsed=time.time() - step_started)
 
+        step_started = time.time()
+        notify(8, "Resizing generated views", started=True)
         for i in range(len(multiviews)):
             # multiviews[i] = self.models['super_model'](multiviews[i])
             multiviews[i] = multiviews[i].resize(
                 (self.config.render_size, self.config.render_size))
+        notify(8, "Resizing generated views", elapsed=time.time() - step_started)
 
+        step_started = time.time()
+        notify(9, "Baking texture atlas", started=True)
         texture, mask = self.bake_from_multiview(multiviews,
                                                  selected_camera_elevs, selected_camera_azims, selected_view_weights,
                                                  method=self.config.merge_method)
+        notify(9, "Baking texture atlas", elapsed=time.time() - step_started)
 
         mask_np = (mask.squeeze(-1).cpu().numpy() * 255).astype(np.uint8)
 
+        step_started = time.time()
+        notify(10, "Inpainting seams and saving textured mesh", started=True)
         texture = self.texture_inpaint(texture, mask_np)
 
         self.render.set_texture(texture)
         textured_mesh = self.render.save_mesh()
+        notify(10, "Inpainting seams and saving textured mesh", elapsed=time.time() - step_started)
 
         return textured_mesh
