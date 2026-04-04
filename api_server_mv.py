@@ -55,25 +55,32 @@ handler = None
 def build_logger(logger_name, logger_filename):
     global handler
 
+    # Prevent Python logging internals from recursively writing
+    # "--- Logging error ---" to redirected stderr when a console
+    # handler hits a broken pipe under external launchers.
+    logging.raiseExceptions = False
+
     formatter = logging.Formatter(
         fmt="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
     # Set the format of root handlers
-    if not logging.getLogger().handlers:
+    root_logger = logging.getLogger()
+    if not root_logger.handlers:
         logging.basicConfig(level=logging.INFO)
-    logging.getLogger().handlers[0].setFormatter(formatter)
+    if root_logger.handlers:
+        root_logger.handlers[0].setFormatter(formatter)
 
     # Redirect stdout and stderr to loggers
     stdout_logger = logging.getLogger("stdout")
     stdout_logger.setLevel(logging.INFO)
-    sl = StreamToLogger(stdout_logger, logging.INFO)
+    sl = StreamToLogger(stdout_logger, logging.INFO, terminal=sys.__stdout__)
     sys.stdout = sl
 
     stderr_logger = logging.getLogger("stderr")
     stderr_logger.setLevel(logging.ERROR)
-    sl = StreamToLogger(stderr_logger, logging.ERROR)
+    sl = StreamToLogger(stderr_logger, logging.ERROR, terminal=sys.__stderr__)
     sys.stderr = sl
 
     # Get logger
@@ -88,6 +95,12 @@ def build_logger(logger_name, logger_filename):
             filename, when='D', utc=True, encoding='UTF-8')
         handler.setFormatter(formatter)
 
+        # Remove default console handlers so logging never writes directly
+        # to a launcher-managed pipe. StreamToLogger handles terminal output.
+        for existing in list(root_logger.handlers):
+            root_logger.removeHandler(existing)
+        root_logger.addHandler(handler)
+
         for name, item in logging.root.manager.loggerDict.items():
             if isinstance(item, logging.Logger):
                 item.addHandler(handler)
@@ -100,8 +113,8 @@ class StreamToLogger(object):
     Fake file-like stream object that redirects writes to a logger instance.
     """
 
-    def __init__(self, logger, log_level=logging.INFO):
-        self.terminal = sys.stdout
+    def __init__(self, logger, log_level=logging.INFO, terminal=None):
+        self.terminal = terminal or sys.__stdout__
         self.logger = logger
         self.log_level = log_level
         self.linebuf = ''
@@ -110,23 +123,28 @@ class StreamToLogger(object):
         return getattr(self.terminal, attr)
 
     def write(self, buf):
-        temp_linebuf = self.linebuf + buf
-        self.linebuf = ''
-        for line in temp_linebuf.splitlines(True):
-            # From the io.TextIOWrapper docs:
-            #   On output, if newline is None, any '\n' characters written
-            #   are translated to the system default line separator.
-            # By default sys.stdout.write() expects '\n' newlines and then
-            # translates them so this is still cross platform.
-            if line[-1] == '\n':
-                self.logger.log(self.log_level, line.rstrip())
-            else:
-                self.linebuf += line
+        try:
+            if self.terminal and buf:
+                self.terminal.write(buf)
+            temp_linebuf = self.linebuf + buf
+            self.linebuf = ''
+            for line in temp_linebuf.splitlines(True):
+                if line[-1] == '\n':
+                    self.logger.log(self.log_level, line.rstrip())
+                else:
+                    self.linebuf += line
+        except BrokenPipeError:
+            pass
 
     def flush(self):
-        if self.linebuf != '':
-            self.logger.log(self.log_level, self.linebuf.rstrip())
-        self.linebuf = ''
+        try:
+            if self.terminal:
+                self.terminal.flush()
+            if self.linebuf != '':
+                self.logger.log(self.log_level, self.linebuf.rstrip())
+            self.linebuf = ''
+        except BrokenPipeError:
+            self.linebuf = ''
 
 
 def pretty_print_semaphore(semaphore):
