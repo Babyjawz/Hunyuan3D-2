@@ -347,7 +347,6 @@ class ModelWorker:
             params['num_inference_steps'] = params.get("num_inference_steps", 5)
             params['guidance_scale'] = params.get('guidance_scale', 5.0)
             params['mc_algo'] = 'mc'
-            import time
             start_time = time.time()
             emit_stage("sampling_shape")
             mesh = self.pipeline(**params)[0]
@@ -359,6 +358,13 @@ class ModelWorker:
             mesh = FloaterRemover()(mesh)
             mesh = DegenerateFaceRemover()(mesh)
             mesh = FaceReducer()(mesh, max_facenum=params.get('face_count', 40000))
+            texture_resolution = params.get("texture_resolution")
+            if texture_resolution:
+                texture_resolution = int(texture_resolution)
+                self.pipeline_tex.set_output_sizes(
+                    render_size=texture_resolution,
+                    texture_size=texture_resolution,
+                )
             texture_started = time.time()
             mesh = self.pipeline_tex(
                 mesh,
@@ -461,6 +467,7 @@ async def server_info():
             "enable_flashvdm": args.enable_flashvdm,
             "enable_tex": args.enable_tex,
             "enable_t23d": args.enable_t23d,
+            "texture_resolution_options": [1024, 2048],
             "device": args.device,
             "port": args.port,
         },

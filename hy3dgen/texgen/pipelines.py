@@ -33,7 +33,14 @@ logger = logging.getLogger(__name__)
 
 class Hunyuan3DTexGenConfig:
 
-    def __init__(self, light_remover_ckpt_path, multiview_ckpt_path, subfolder_name):
+    def __init__(
+        self,
+        light_remover_ckpt_path,
+        multiview_ckpt_path,
+        subfolder_name,
+        render_size=2048,
+        texture_size=2048,
+    ):
         self.device = 'cuda'
         self.light_remover_ckpt_path = light_remover_ckpt_path
         self.multiview_ckpt_path = multiview_ckpt_path
@@ -42,8 +49,8 @@ class Hunyuan3DTexGenConfig:
         self.candidate_camera_elevs = [0, 0, 0, 0, 90, -90]
         self.candidate_view_weights = [1, 0.1, 0.5, 0.1, 0.05, 0.05]
 
-        self.render_size = 2048
-        self.texture_size = 2048
+        self.render_size = render_size
+        self.texture_size = texture_size
         self.bake_exp = 4
         self.merge_method = 'fast'
 
@@ -53,7 +60,13 @@ class Hunyuan3DTexGenConfig:
 
 class Hunyuan3DPaintPipeline:
     @classmethod
-    def from_pretrained(cls, model_path, subfolder='hunyuan3d-paint-v2-0-turbo'):
+    def from_pretrained(
+        cls,
+        model_path,
+        subfolder='hunyuan3d-paint-v2-0-turbo',
+        render_size=2048,
+        texture_size=2048,
+    ):
         original_model_path = model_path
         if not os.path.exists(model_path):
             # try local path
@@ -75,17 +88,41 @@ class Hunyuan3DPaintPipeline:
                     )
                     delight_model_path = os.path.join(model_path, 'hunyuan3d-delight-v2-0')
                     multiview_model_path = os.path.join(model_path, subfolder)
-                    return cls(Hunyuan3DTexGenConfig(delight_model_path, multiview_model_path, subfolder))
+                    return cls(
+                        Hunyuan3DTexGenConfig(
+                            delight_model_path,
+                            multiview_model_path,
+                            subfolder,
+                            render_size=render_size,
+                            texture_size=texture_size,
+                        )
+                    )
                 except Exception:
                     import traceback
                     traceback.print_exc()
                     raise RuntimeError(f"Something wrong while loading {model_path}")
             else:
-                return cls(Hunyuan3DTexGenConfig(delight_model_path, multiview_model_path, subfolder))
+                return cls(
+                    Hunyuan3DTexGenConfig(
+                        delight_model_path,
+                        multiview_model_path,
+                        subfolder,
+                        render_size=render_size,
+                        texture_size=texture_size,
+                    )
+                )
         else:
             delight_model_path = os.path.join(model_path, 'hunyuan3d-delight-v2-0')
             multiview_model_path = os.path.join(model_path, subfolder)
-            return cls(Hunyuan3DTexGenConfig(delight_model_path, multiview_model_path, subfolder))
+            return cls(
+                Hunyuan3DTexGenConfig(
+                    delight_model_path,
+                    multiview_model_path,
+                    subfolder,
+                    render_size=render_size,
+                    texture_size=texture_size,
+                )
+            )
             
     def __init__(self, config):
         self.config = config
@@ -103,6 +140,14 @@ class Hunyuan3DPaintPipeline:
         self.models['delight_model'] = Light_Shadow_Remover(self.config)
         self.models['multiview_model'] = Multiview_Diffusion_Net(self.config)
         # self.models['super_model'] = Image_Super_Net(self.config)
+
+    def set_output_sizes(self, render_size=None, texture_size=None):
+        if render_size is not None:
+            self.config.render_size = int(render_size)
+            self.render.set_default_render_resolution(self.config.render_size)
+        if texture_size is not None:
+            self.config.texture_size = int(texture_size)
+            self.render.set_default_texture_resolution(self.config.texture_size)
 
     def enable_model_cpu_offload(self, gpu_id: Optional[int] = None, device: Union[torch.device, str] = "cuda"):
         self.models['delight_model'].pipeline.enable_model_cpu_offload(gpu_id=gpu_id, device=device)
