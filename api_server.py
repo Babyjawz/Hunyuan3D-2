@@ -39,7 +39,6 @@ from hy3dgen.rembg import BackgroundRemover
 from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline, FloaterRemover, DegenerateFaceRemover, FaceReducer, \
     MeshSimplifier
 from hy3dgen.texgen import Hunyuan3DPaintPipeline
-from hy3dgen.text2image import HunyuanDiTPipeline
 
 LOGDIR = '.'
 
@@ -163,10 +162,6 @@ class ModelWorker:
             device=device,
         )
         self.pipeline.enable_flashvdm(mc_algo='mc')
-        self.pipeline_t2i = HunyuanDiTPipeline(
-            'Tencent-Hunyuan/HunyuanDiT-v1.1-Diffusers-Distilled',
-            device=device
-        )
         if enable_tex:
             self.pipeline_tex = Hunyuan3DPaintPipeline.from_pretrained(tex_model_path)
 
@@ -190,8 +185,7 @@ class ModelWorker:
             image = load_image_from_base64(image)
         else:
             if 'text' in params:
-                text = params["text"]
-                image = self.pipeline_t2i(text)
+                raise ValueError("Text prompts are no longer supported by this Hunyuan backend.")
             else:
                 raise ValueError("No input image or text provided")
 
